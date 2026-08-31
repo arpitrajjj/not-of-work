@@ -1,0 +1,84 @@
+name: Zenserp Mass Reg
+
+on:
+  workflow_dispatch:
+    inputs:
+      total_accounts:
+        description: 'Total accounts'
+        required: false
+        default: '100'
+
+jobs:
+  shard:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install deps
+        run: pip install seleniumbase requests
+
+      - name: Run shard ${{ matrix.shard }}
+        env:
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: python mass_reg.py ${{ matrix.shard }} 15 ${{ inputs.total_accounts || '100' }}
+
+      - name: Upload shard results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: shard-${{ matrix.shard }}
+          path: results/
+
+  merge-and-send:
+    runs-on: ubuntu-latest
+    needs: shard
+    if: always()
+    steps:
+      - name: Download all shard artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: shard-*
+          merge-multiple: true
+          path: all-results/
+
+      - name: Merge files
+        run: |
+          cd all-results
+          cat accounts_shard_*.txt | sort -u > accounts_100.txt
+          cat keys_shard_*.txt | sort -u > apikeys_100.txt
+          OK=$(wc -l < apikeys_100.txt)
+          echo "TOTAL_OK=$OK" >> $GITHUB_ENV
+          echo "=== Merged: $OK keys ==="
+          cat summary_shard_*.txt
+
+      - name: Send accounts to Telegram
+        env:
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendDocument" \
+            -F chat_id="${TG_CHAT_ID}" \
+            -F caption="🔐 ZenSerP Accounts — ${TOTAL_OK} keys ✅" \
+            -F document=@all-results/accounts_100.txt
+
+      - name: Send API keys to Telegram
+        env:
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${TG_TOKEN}/sendDocument" \
+            -F chat_id="${TG_CHAT_ID}" \
+            -F caption="🔑 ZenSerP API Keys — ${TOTAL_OK} ✅" \
+            -F document=@all-results/apikeys_100.txt
